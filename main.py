@@ -180,7 +180,13 @@ DEFAULT_CONFIG = {
     "alert_sound_duration": 400,
     "expired_display_seconds": 4,
     "visual_countdown": True,
-    "visual_countdown_size": 72
+    "visual_countdown_size": 72,
+    "layout": {
+        "grid_size": 20,
+        "countdown_offset_x": None,
+        "countdown_offset_y": None,
+        "elements": []
+    }
 }
 
 
@@ -197,6 +203,10 @@ def load_config():
                 for k, v in DEFAULT_CONFIG["overlay"].items():
                     if k not in cfg.get("overlay", {}):
                         cfg.setdefault("overlay", {})[k] = v
+            if "layout" in DEFAULT_CONFIG:
+                for k, v in DEFAULT_CONFIG["layout"].items():
+                    if k not in cfg.get("layout", {}):
+                        cfg.setdefault("layout", {})[k] = v
             # Migration: altes Format (buffs direkt) -> neues Profil-System
             if "buffs" in cfg and "profiles" not in cfg:
                 profile_name = cfg.get("active_profile", "Standard")
@@ -416,6 +426,14 @@ class WoWraOverlay:
         self._wow_last_rect = None  # (x, y, w, h) des WoW-Fensters
         self._wow_overlay_hidden = False  # Overlay gerade versteckt?
 
+        # Edit Mode / Layout Manager
+        self._edit_mode = False
+        self._edit_grid_window = None
+        self._edit_toolbar = None
+        self._layout_elements = {}
+        self._edit_original_positions = {}
+        self._edit_original_elements = []
+
         # Tkinter Root
         self.root = tk.Tk()
         self.root.title("WoWra")
@@ -464,6 +482,9 @@ class WoWraOverlay:
         self._countdown_window = None
         self._countdown_label = None
         self._setup_visual_countdown()
+
+        # Custom Layout-Elemente
+        self._create_layout_elements()
 
         # Setup
         self._setup_buffs()
@@ -525,6 +546,16 @@ class WoWraOverlay:
         settings_btn.bind('<Enter>', lambda e: settings_btn.configure(fg=self.ACCENT))
         settings_btn.bind('<Leave>', lambda e: settings_btn.configure(fg="#8b949e"))
 
+        # Edit Mode (Layout-Bearbeitung)
+        self._edit_btn = tk.Label(
+            title_frame, text="\U0001f512", fg="#8b949e", bg=self.TITLE_BG,
+            font=("Segoe UI", 11), cursor="hand2"
+        )
+        self._edit_btn.pack(side=tk.RIGHT, padx=2)
+        self._edit_btn.bind('<Button-1>', lambda e: self._toggle_edit_mode())
+        self._edit_btn.bind('<Enter>', lambda e: self._edit_btn.configure(fg=self.ACCENT))
+        self._edit_btn.bind('<Leave>', lambda e: self._edit_btn.configure(fg="#8b949e"))
+
     def _drag_start(self, event):
         self._drag_x = event.x_root - self.root.winfo_x()
         self._drag_y = event.y_root - self.root.winfo_y()
@@ -532,6 +563,8 @@ class WoWraOverlay:
     def _drag_move(self, event):
         x = event.x_root - self._drag_x
         y = event.y_root - self._drag_y
+        if self._edit_mode:
+            x, y = self._snap_to_grid(x, y)
         self.root.geometry(f"+{x}+{y}")
         self.config['overlay']['x'] = x
         self.config['overlay']['y'] = y
@@ -613,6 +646,10 @@ class WoWraOverlay:
             self._countdown_window.withdraw()
             return
 
+        # Im Edit-Modus: Countdown wird manuell positioniert
+        if self._edit_mode:
+            return
+
         # Finde den Timer der am nächsten am Ablauf ist
         closest_name = None
         closest_remaining = float('inf')
@@ -635,8 +672,14 @@ class WoWraOverlay:
 
             self._countdown_label.configure(text=countdown_text, fg=color)
 
-            # Relativ zum WoW-Fenster zentrieren (oder Bildschirm als Fallback)
-            if self.config['overlay'].get('attach_to_wow', True) and self._wow_last_rect:
+            # Position: benutzerdefiniert oder zentriert
+            layout = self.config.get('layout', {})
+            co_x = layout.get('countdown_offset_x')
+            co_y = layout.get('countdown_offset_y')
+            if co_x is not None and co_y is not None and self._wow_last_rect:
+                cx = self._wow_last_rect[0] + co_x
+                cy = self._wow_last_rect[1] + co_y
+            elif self.config['overlay'].get('attach_to_wow', True) and self._wow_last_rect:
                 wx, wy, ww, wh = self._wow_last_rect
                 self._countdown_window.update_idletasks()
                 cw = self._countdown_window.winfo_reqwidth()
@@ -656,6 +699,400 @@ class WoWraOverlay:
             self._countdown_window.deiconify()
         else:
             self._countdown_window.withdraw()
+
+    # ---- Layout / Edit Mode ----
+
+    def _create_layout_elements(self):
+        """Erstellt benutzerdefinierte Text-Elemente aus der Config."""
+        for elem_cfg in self.config.get('layout', {}).get('elements', []):
+            self._spawn_layout_element(elem_cfg)
+
+    def _spawn_layout_element(self, elem_cfg):
+        """Erstellt ein einzelnes Layout-Element als Toplevel-Fenster."""
+        eid = elem_cfg.get('id', f"elem_{id(elem_cfg)}")
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.attributes('-topmost', True)
+        win.configure(bg='black')
+        win.attributes('-transparentcolor', 'black')
+
+        font_family = elem_cfg.get('font_family', 'Segoe UI')
+        font_size = elem_cfg.get('font_size', 14)
+        font_weight = elem_cfg.get('font_weight', 'bold')
+        color = elem_cfg.get('color', '#ffffff')
+        text = elem_cfg.get('text', 'Text')
+
+        label = tk.Label(win, text=text, fg=color, bg='black',
+                         font=(font_family, font_size, font_weight))
+        label.pack()
+
+        x_off = elem_cfg.get('x_offset', 100)
+        y_off = elem_cfg.get('y_offset', 100)
+        if self._wow_last_rect:
+            wx, wy = self._wow_last_rect[0], self._wow_last_rect[1]
+            win.geometry(f"+{wx + x_off}+{wy + y_off}")
+        else:
+            win.geometry(f"+{x_off}+{y_off}")
+
+        if not self._edit_mode:
+            self._make_click_through(win)
+
+        self._layout_elements[eid] = {
+            'window': win, 'label': label, 'config': elem_cfg
+        }
+        return eid
+
+    def _make_click_through(self, window):
+        """Macht ein Fenster klick-durchlässig via Windows API."""
+        window.update_idletasks()
+        try:
+            hwnd = int(window.frame(), 16)
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ctypes.windll.user32.SetWindowLongW(
+                hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+        except Exception:
+            pass
+
+    def _remove_click_through(self, window):
+        """Entfernt Klick-Durchlässigkeit."""
+        window.update_idletasks()
+        try:
+            hwnd = int(window.frame(), 16)
+            GWL_EXSTYLE = -20
+            WS_EX_TRANSPARENT = 0x00000020
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ctypes.windll.user32.SetWindowLongW(
+                hwnd, GWL_EXSTYLE, style & ~WS_EX_TRANSPARENT)
+        except Exception:
+            pass
+
+    def _toggle_edit_mode(self):
+        if self._edit_mode:
+            self._exit_edit_mode(save=True)
+        else:
+            self._enter_edit_mode()
+
+    def _enter_edit_mode(self):
+        self._edit_mode = True
+        self._edit_btn.configure(text="\U0001f513")
+        logger.info("Edit Mode aktiviert")
+
+        # Positionen sichern für Cancel
+        self._edit_original_positions = {
+            'overlay': (self.config['overlay'].get('wow_offset_x', 50),
+                        self.config['overlay'].get('wow_offset_y', 50))
+        }
+        layout = self.config.get('layout', {})
+        self._edit_original_positions['countdown'] = (
+            layout.get('countdown_offset_x'),
+            layout.get('countdown_offset_y'))
+        for eid, elem in self._layout_elements.items():
+            self._edit_original_positions[eid] = (
+                elem['config']['x_offset'], elem['config']['y_offset'])
+        self._edit_original_elements = json.loads(
+            json.dumps(self.config.get('layout', {}).get('elements', [])))
+
+        self._create_grid_overlay()
+        self._create_edit_toolbar()
+        self._enable_element_dragging()
+
+    def _exit_edit_mode(self, save=True):
+        if not save:
+            # Positionen wiederherstellen
+            if 'overlay' in self._edit_original_positions:
+                ox, oy = self._edit_original_positions['overlay']
+                self.config['overlay']['wow_offset_x'] = ox
+                self.config['overlay']['wow_offset_y'] = oy
+                if self._wow_last_rect:
+                    wx, wy = self._wow_last_rect[0], self._wow_last_rect[1]
+                    self.root.geometry(f"+{wx + ox}+{wy + oy}")
+            if 'countdown' in self._edit_original_positions:
+                co = self._edit_original_positions['countdown']
+                self.config.setdefault('layout', {})['countdown_offset_x'] = co[0]
+                self.config.setdefault('layout', {})['countdown_offset_y'] = co[1]
+            # Layout-Elemente wiederherstellen
+            for eid in list(self._layout_elements.keys()):
+                self._layout_elements[eid]['window'].destroy()
+            self._layout_elements.clear()
+            self.config.setdefault('layout', {})['elements'] = self._edit_original_elements
+            for elem_cfg in self._edit_original_elements:
+                self._spawn_layout_element(elem_cfg)
+
+        self._edit_mode = False
+        self._edit_btn.configure(text="\U0001f512")
+        logger.info(f"Edit Mode beendet (gespeichert={save})")
+
+        self._destroy_grid_overlay()
+        if self._edit_toolbar:
+            self._edit_toolbar.destroy()
+            self._edit_toolbar = None
+        self._disable_element_dragging()
+
+        if save:
+            self.config.setdefault('layout', {})['elements'] = [
+                elem['config'] for elem in self._layout_elements.values()]
+            save_config(self.config)
+
+    def _create_grid_overlay(self):
+        """Erstellt Grid-Overlay über dem WoW-Fenster."""
+        if self._edit_grid_window:
+            return
+        if self._wow_last_rect:
+            x, y, w, h = self._wow_last_rect
+        else:
+            x, y = 0, 0
+            w = self.root.winfo_screenwidth()
+            h = self.root.winfo_screenheight()
+
+        gs = self.config.get('layout', {}).get('grid_size', 20)
+        self._edit_grid_window = tk.Toplevel(self.root)
+        self._edit_grid_window.overrideredirect(True)
+        self._edit_grid_window.attributes('-topmost', True)
+        self._edit_grid_window.attributes('-alpha', 0.25)
+        self._edit_grid_window.configure(bg='black')
+        self._edit_grid_window.geometry(f"{w}x{h}+{x}+{y}")
+
+        canvas = tk.Canvas(self._edit_grid_window, bg='black',
+                           highlightthickness=0, width=w, height=h)
+        canvas.pack(fill=tk.BOTH, expand=True)
+
+        for gx in range(0, w, gs):
+            canvas.create_line(gx, 0, gx, h, fill='#1a3a1a')
+        for gy in range(0, h, gs):
+            canvas.create_line(0, gy, w, gy, fill='#1a3a1a')
+
+        cx, cy = w // 2, h // 2
+        canvas.create_line(cx, 0, cx, h, fill='#2a5a2a', width=2)
+        canvas.create_line(0, cy, w, cy, fill='#2a5a2a', width=2)
+
+        self._make_click_through(self._edit_grid_window)
+        self._edit_grid_window.lower()
+
+    def _destroy_grid_overlay(self):
+        if self._edit_grid_window:
+            self._edit_grid_window.destroy()
+            self._edit_grid_window = None
+
+    def _update_grid(self):
+        """Grid neu zeichnen nach Größenänderung."""
+        try:
+            self.config.setdefault('layout', {})['grid_size'] = self._grid_size_var.get()
+        except (tk.TclError, ValueError):
+            return
+        self._destroy_grid_overlay()
+        self._create_grid_overlay()
+
+    def _create_edit_toolbar(self):
+        """Erstellt die Bearbeitungsmodus-Toolbar."""
+        if self._edit_toolbar:
+            return
+        if self._wow_last_rect:
+            wx, wy, ww, wh = self._wow_last_rect
+        else:
+            wx, wy = 0, 0
+            ww = self.root.winfo_screenwidth()
+
+        self._edit_toolbar = tk.Toplevel(self.root)
+        self._edit_toolbar.overrideredirect(True)
+        self._edit_toolbar.attributes('-topmost', True)
+        self._edit_toolbar.configure(bg='#1a1a2e',
+                                      highlightbackground='#58a6ff', highlightthickness=1)
+
+        tf = tk.Frame(self._edit_toolbar, bg='#1a1a2e')
+        tf.pack(fill=tk.X, padx=10, pady=8)
+
+        tk.Label(tf, text="\U0001f527 Bearbeitungsmodus", fg="#58a6ff", bg='#1a1a2e',
+                 font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, padx=(0, 15))
+
+        tk.Label(tf, text="\U0001f4d0 Raster:", fg="#8b949e", bg='#1a1a2e',
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self._grid_size_var = tk.IntVar(
+            value=self.config.get('layout', {}).get('grid_size', 20))
+        tk.Spinbox(tf, from_=5, to=100, increment=5,
+                   textvariable=self._grid_size_var, width=4,
+                   bg="#161b22", fg="#e6edf3", font=("Segoe UI", 9),
+                   command=self._update_grid, buttonbackground="#21262d"
+                   ).pack(side=tk.LEFT, padx=(4, 15))
+
+        tk.Button(tf, text="➕ Text", bg="#238636", fg="white",
+                  font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                  command=self._add_layout_element).pack(side=tk.LEFT, padx=4)
+
+        tk.Button(tf, text="✅ Speichern", bg="#238636", fg="white",
+                  font=("Segoe UI", 9, "bold"), relief="flat", cursor="hand2",
+                  command=lambda: self._exit_edit_mode(save=True)
+                  ).pack(side=tk.LEFT, padx=4)
+        tk.Button(tf, text="❌ Abbrechen", bg="#da3633", fg="white",
+                  font=("Segoe UI", 9), relief="flat", cursor="hand2",
+                  command=lambda: self._exit_edit_mode(save=False)
+                  ).pack(side=tk.LEFT, padx=4)
+
+        self._edit_toolbar.update_idletasks()
+        tw = self._edit_toolbar.winfo_reqwidth()
+        self._edit_toolbar.geometry(f"+{wx + (ww - tw) // 2}+{wy + 5}")
+
+    def _snap_to_grid(self, x, y):
+        gs = max(1, self.config.get('layout', {}).get('grid_size', 20))
+        return (round(x / gs) * gs, round(y / gs) * gs)
+
+    def _enable_element_dragging(self):
+        """Aktiviert Drag-Modus für alle positionierbaren Elemente."""
+        self.root.configure(highlightbackground="#58a6ff", highlightthickness=2,
+                            highlightcolor="#58a6ff")
+
+        if self._countdown_window:
+            self._countdown_label.configure(text="⏱", fg="#58a6ff")
+            self._countdown_window.configure(highlightbackground="#58a6ff",
+                                              highlightthickness=2,
+                                              highlightcolor="#58a6ff")
+            self._remove_click_through(self._countdown_window)
+            layout = self.config.get('layout', {})
+            co_x = layout.get('countdown_offset_x')
+            co_y = layout.get('countdown_offset_y')
+            if co_x is not None and co_y is not None and self._wow_last_rect:
+                wx, wy = self._wow_last_rect[0], self._wow_last_rect[1]
+                self._countdown_window.geometry(f"+{wx + co_x}+{wy + co_y}")
+            elif self._wow_last_rect:
+                wx, wy, ww, wh = self._wow_last_rect
+                self._countdown_window.update_idletasks()
+                cw = self._countdown_window.winfo_reqwidth()
+                ch = self._countdown_window.winfo_reqheight()
+                self._countdown_window.geometry(
+                    f"+{wx + (ww - cw) // 2}+{wy + int(wh * 0.35)}")
+            self._countdown_window.deiconify()
+            self._setup_element_drag(self._countdown_window, 'countdown')
+
+        for eid, elem in self._layout_elements.items():
+            elem['window'].configure(highlightbackground="#58a6ff",
+                                      highlightthickness=2,
+                                      highlightcolor="#58a6ff")
+            self._remove_click_through(elem['window'])
+            self._setup_element_drag(elem['window'], eid)
+
+    def _disable_element_dragging(self):
+        """Deaktiviert Drag-Modus."""
+        self.root.configure(highlightthickness=0)
+
+        if self._countdown_window:
+            self._countdown_window.configure(highlightthickness=0)
+            self._countdown_label.configure(text="")
+            self._countdown_window.withdraw()
+            self._unbind_element_drag(self._countdown_window)
+            self._make_click_through(self._countdown_window)
+
+        for eid, elem in self._layout_elements.items():
+            elem['window'].configure(highlightthickness=0)
+            self._unbind_element_drag(elem['window'])
+            self._make_click_through(elem['window'])
+
+    def _setup_element_drag(self, window, element_id):
+        """Richtet Drag&Drop für ein Element ein."""
+        drag = {'x': 0, 'y': 0, 'id': element_id}
+
+        def start(event):
+            drag['x'] = event.x_root - window.winfo_x()
+            drag['y'] = event.y_root - window.winfo_y()
+
+        def move(event):
+            nx, ny = self._snap_to_grid(
+                event.x_root - drag['x'], event.y_root - drag['y'])
+            window.geometry(f"+{nx}+{ny}")
+            if self._wow_last_rect:
+                xo = nx - self._wow_last_rect[0]
+                yo = ny - self._wow_last_rect[1]
+            else:
+                xo, yo = nx, ny
+            if drag['id'] == 'countdown':
+                self.config.setdefault('layout', {})['countdown_offset_x'] = xo
+                self.config.setdefault('layout', {})['countdown_offset_y'] = yo
+            elif drag['id'] in self._layout_elements:
+                self._layout_elements[drag['id']]['config']['x_offset'] = xo
+                self._layout_elements[drag['id']]['config']['y_offset'] = yo
+
+        def context(event):
+            if drag['id'] in self._layout_elements:
+                self._show_element_menu(event, drag['id'])
+
+        for widget in [window] + list(window.winfo_children()):
+            widget.bind('<Button-1>', start)
+            widget.bind('<B1-Motion>', move)
+            widget.bind('<Button-3>', context)
+
+    def _unbind_element_drag(self, window):
+        for ev in ('<Button-1>', '<B1-Motion>', '<Button-3>'):
+            try:
+                window.unbind(ev)
+            except Exception:
+                pass
+            for child in window.winfo_children():
+                try:
+                    child.unbind(ev)
+                except Exception:
+                    pass
+
+    def _show_element_menu(self, event, elem_id):
+        """Rechtsklick-Kontextmenü für Layout-Elemente."""
+        menu = tk.Menu(self.root, tearoff=0, bg="#21262d", fg="#e6edf3",
+                       activebackground="#388bfd", activeforeground="white",
+                       font=("Segoe UI", 10))
+        menu.add_command(label="✏️ Bearbeiten",
+                         command=lambda: self._edit_layout_element(elem_id))
+        menu.add_separator()
+        menu.add_command(label="🗑️ Entfernen",
+                         command=lambda: self._delete_layout_element(elem_id))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _add_layout_element(self):
+        """Dialog zum Hinzufügen eines Text-Elements."""
+        TextElementDialog(self.root, None, self._on_element_created)
+
+    def _on_element_created(self, elem_cfg):
+        if 'id' not in elem_cfg:
+            elem_cfg['id'] = f"elem_{int(time.time() * 1000)}"
+        if 'x_offset' not in elem_cfg:
+            if self._wow_last_rect:
+                elem_cfg['x_offset'] = self._wow_last_rect[2] // 2
+                elem_cfg['y_offset'] = self._wow_last_rect[3] // 2
+            else:
+                elem_cfg['x_offset'] = 400
+                elem_cfg['y_offset'] = 300
+        eid = self._spawn_layout_element(elem_cfg)
+        if self._edit_mode and eid in self._layout_elements:
+            elem = self._layout_elements[eid]
+            elem['window'].configure(highlightbackground="#58a6ff",
+                                      highlightthickness=2, highlightcolor="#58a6ff")
+            self._remove_click_through(elem['window'])
+            self._setup_element_drag(elem['window'], eid)
+
+    def _edit_layout_element(self, elem_id):
+        if elem_id not in self._layout_elements:
+            return
+        TextElementDialog(self.root, self._layout_elements[elem_id]['config'],
+                          lambda cfg: self._on_element_edited(elem_id, cfg))
+
+    def _on_element_edited(self, elem_id, new_cfg):
+        if elem_id not in self._layout_elements:
+            return
+        elem = self._layout_elements[elem_id]
+        new_cfg['x_offset'] = elem['config']['x_offset']
+        new_cfg['y_offset'] = elem['config']['y_offset']
+        new_cfg['id'] = elem_id
+        elem['label'].configure(
+            text=new_cfg.get('text', 'Text'),
+            fg=new_cfg.get('color', '#ffffff'),
+            font=(new_cfg.get('font_family', 'Segoe UI'),
+                  new_cfg.get('font_size', 14),
+                  new_cfg.get('font_weight', 'bold')))
+        elem['config'] = new_cfg
+
+    def _delete_layout_element(self, elem_id):
+        if elem_id not in self._layout_elements:
+            return
+        self._layout_elements[elem_id]['window'].destroy()
+        del self._layout_elements[elem_id]
 
     def _check_update_async(self):
         """Startet Update-Check im Hintergrund."""
@@ -982,7 +1419,7 @@ class WoWraOverlay:
         self.root.geometry(f"{w}x{h}")
 
     def _get_own_hwnds(self):
-        """Gibt eine Menge aller eigenen Fenster-HWNDs zurück (Overlay, Countdown, Dialoge)."""
+        """Gibt eine Menge aller eigenen Fenster-HWNDs zurück (Overlay, Countdown, Dialoge, Layout-Elemente)."""
         hwnds = set()
         try:
             hwnds.add(int(self.root.frame(), 16))
@@ -1000,10 +1437,27 @@ class WoWraOverlay:
                     hwnds.add(int(w.frame(), 16))
                 except Exception:
                     pass
+        # Layout-Elemente (können von root losgelöst sein)
+        for elem in self._layout_elements.values():
+            try:
+                hwnds.add(int(elem['window'].frame(), 16))
+            except Exception:
+                pass
+        # Edit-Mode Fenster
+        if self._edit_grid_window:
+            try:
+                hwnds.add(int(self._edit_grid_window.frame(), 16))
+            except Exception:
+                pass
+        if self._edit_toolbar:
+            try:
+                hwnds.add(int(self._edit_toolbar.frame(), 16))
+            except Exception:
+                pass
         return hwnds
 
     def _hide_all_ui(self):
-        """Versteckt ALLE UI-Elemente (Overlay, Countdown, offene Dialoge)."""
+        """Versteckt ALLE UI-Elemente (Overlay, Countdown, offene Dialoge, Layout-Elemente)."""
         if self._wow_overlay_hidden:
             return
         self.root.withdraw()
@@ -1012,6 +1466,11 @@ class WoWraOverlay:
         for w in self.root.winfo_children():
             if isinstance(w, tk.Toplevel):
                 w.withdraw()
+        for elem in self._layout_elements.values():
+            try:
+                elem['window'].withdraw()
+            except Exception:
+                pass
         self._wow_overlay_hidden = True
 
     def _show_all_ui(self):
@@ -1024,12 +1483,23 @@ class WoWraOverlay:
             if isinstance(w, tk.Toplevel) and w != self._countdown_window:
                 w.deiconify()
                 w.attributes('-topmost', True)
+        # Layout-Elemente wieder zeigen
+        for elem in self._layout_elements.values():
+            try:
+                elem['window'].deiconify()
+                elem['window'].attributes('-topmost', True)
+            except Exception:
+                pass
         # Countdown wird von _update_visual_countdown() gesteuert
         self._wow_overlay_hidden = False
 
     def _track_wow_window(self):
         """Prüft ob sich das WoW-Fenster bewegt hat und zieht das Overlay mit.
         Versteckt das Overlay wenn WoW minimiert oder verdeckt ist."""
+        # Im Edit-Mode kein Fokus-Tracking - sonst verschwindet alles beim Klick
+        if self._edit_mode:
+            return
+
         if not self.config['overlay'].get('attach_to_wow', True):
             # Wenn abgekoppelt, sicherstellen dass es sichtbar ist
             if self._wow_overlay_hidden:
@@ -1075,6 +1545,11 @@ class WoWraOverlay:
             ox = wx + self.config['overlay'].get('wow_offset_x', 50)
             oy = wy + self.config['overlay'].get('wow_offset_y', 50)
             self.root.geometry(f"+{ox}+{oy}")
+            # Layout-Elemente positionieren
+            for eid, elem in self._layout_elements.items():
+                ex = wx + elem['config']['x_offset']
+                ey = wy + elem['config']['y_offset']
+                elem['window'].geometry(f"+{ex}+{ey}")
             logger.info(f"WoW-Fenster gefunden, Overlay angeheftet")
             return
 
@@ -1091,6 +1566,11 @@ class WoWraOverlay:
             self.root.geometry(f"+{new_x}+{new_y}")
             self.config['overlay']['x'] = new_x
             self.config['overlay']['y'] = new_y
+            # Layout-Elemente mitziehen
+            for eid, elem in self._layout_elements.items():
+                ex = elem['window'].winfo_x() + dx
+                ey = elem['window'].winfo_y() + dy
+                elem['window'].geometry(f"+{ex}+{ey}")
 
         self._wow_last_rect = new_rect
         self._wow_hwnd = hwnd
@@ -1725,6 +2205,125 @@ class BuffEditDialog:
             "depends_on": depends,
         }
         self.on_save(buff)
+        self.win.destroy()
+
+
+class TextElementDialog:
+    """Dialog zum Erstellen/Bearbeiten eines Layout-Text-Elements."""
+
+    def __init__(self, parent, elem_data, on_save):
+        self.on_save = on_save
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("Text bearbeiten" if elem_data else "Neues Text-Element")
+        self.win.geometry("380x380")
+        self.win.configure(bg="#0d1117")
+        self.win.attributes('-topmost', True)
+        self.win.resizable(False, False)
+
+        frame = tk.Frame(self.win, bg="#0d1117")
+        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
+
+        d = elem_data or {
+            'text': 'Neuer Text', 'font_size': 14,
+            'font_family': 'Segoe UI', 'font_weight': 'bold',
+            'color': '#ffffff'
+        }
+
+        # Text
+        tk.Label(frame, text="Text:", fg="#e6edf3", bg="#0d1117",
+                 font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 2))
+        self.text_var = tk.StringVar(value=d.get('text', 'Text'))
+        tk.Entry(frame, textvariable=self.text_var, bg="#161b22", fg="#e6edf3",
+                 font=("Segoe UI", 11), relief="flat", insertbackground="#e6edf3"
+                 ).pack(fill=tk.X, pady=(0, 8))
+
+        # Schriftgröße
+        size_frame = tk.Frame(frame, bg="#0d1117")
+        size_frame.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(size_frame, text="Schriftgröße:", fg="#e6edf3", bg="#0d1117",
+                 font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        self.size_var = tk.IntVar(value=d.get('font_size', 14))
+        tk.Spinbox(size_frame, from_=8, to=120, textvariable=self.size_var,
+                   width=5, bg="#161b22", fg="#e6edf3", font=("Segoe UI", 10),
+                   buttonbackground="#21262d").pack(side=tk.LEFT, padx=8)
+
+        # Schriftart
+        tk.Label(frame, text="Schriftart:", fg="#e6edf3", bg="#0d1117",
+                 font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 2))
+        self.font_var = tk.StringVar(value=d.get('font_family', 'Segoe UI'))
+        ttk.Combobox(frame, textvariable=self.font_var,
+                     values=['Segoe UI', 'Impact', 'Arial', 'Consolas',
+                             'Tahoma', 'Verdana', 'Georgia', 'Courier New'],
+                     width=20).pack(fill=tk.X, pady=(0, 8))
+
+        # Stil
+        self.bold_var = tk.BooleanVar(
+            value=d.get('font_weight', 'bold') == 'bold')
+        tk.Checkbutton(frame, text="Fett", variable=self.bold_var,
+                       fg="#e6edf3", bg="#0d1117", selectcolor="#161b22",
+                       activebackground="#0d1117", activeforeground="#e6edf3",
+                       font=("Segoe UI", 10)).pack(anchor="w", pady=2)
+
+        # Farbe
+        color_frame = tk.Frame(frame, bg="#0d1117")
+        color_frame.pack(fill=tk.X, pady=(4, 8))
+        tk.Label(color_frame, text="Farbe:", fg="#e6edf3", bg="#0d1117",
+                 font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        self.color_var = tk.StringVar(value=d.get('color', '#ffffff'))
+        self._color_preview = tk.Label(color_frame, text="  \u2588\u2588  ",
+                                        fg=self.color_var.get(), bg="#0d1117",
+                                        font=("Segoe UI", 12))
+        self._color_preview.pack(side=tk.LEFT, padx=4)
+        tk.Entry(color_frame, textvariable=self.color_var, bg="#161b22",
+                 fg="#e6edf3", font=("Segoe UI", 10), relief="flat", width=8,
+                 insertbackground="#e6edf3").pack(side=tk.LEFT, padx=4)
+
+        # Vorschau
+        preview_size = min(d.get('font_size', 14), 24)
+        self._preview = tk.Label(frame, text=d.get('text', 'Text'),
+                                  fg=d.get('color', '#ffffff'), bg="#161b22",
+                                  font=(d.get('font_family', 'Segoe UI'),
+                                        preview_size,
+                                        d.get('font_weight', 'bold')),
+                                  padx=10, pady=4)
+        self._preview.pack(fill=tk.X, pady=(4, 8))
+
+        # Live-Updates
+        for var in (self.text_var, self.font_var, self.color_var):
+            var.trace_add('write', lambda *_: self._refresh_preview())
+        self.size_var.trace_add('write', lambda *_: self._refresh_preview())
+        self.bold_var.trace_add('write', lambda *_: self._refresh_preview())
+
+        # Speichern
+        tk.Button(frame, text="✅ Speichern", bg="#238636", fg="white",
+                  font=("Segoe UI", 11, "bold"), relief="flat", cursor="hand2",
+                  padx=20, pady=4, command=self._save).pack(pady=(8, 0))
+
+    def _refresh_preview(self):
+        try:
+            w = 'bold' if self.bold_var.get() else 'normal'
+            s = min(max(self.size_var.get(), 8), 24)
+            self._preview.configure(text=self.text_var.get(),
+                                     fg=self.color_var.get(),
+                                     font=(self.font_var.get(), s, w))
+            self._color_preview.configure(fg=self.color_var.get())
+        except Exception:
+            pass
+
+    def _save(self):
+        text = self.text_var.get().strip()
+        if not text:
+            messagebox.showwarning("Pflichtfeld", "Text darf nicht leer sein.",
+                                   parent=self.win)
+            return
+        self.on_save({
+            'text': text,
+            'font_size': max(8, self.size_var.get()),
+            'font_family': self.font_var.get() or 'Segoe UI',
+            'font_weight': 'bold' if self.bold_var.get() else 'normal',
+            'color': self.color_var.get() or '#ffffff'
+        })
         self.win.destroy()
 
 
