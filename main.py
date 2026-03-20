@@ -16,6 +16,17 @@ import ctypes.wintypes
 import logging
 from collections import deque
 
+# Konsolenfenster verstecken (wenn mit python.exe statt pythonw.exe gestartet)
+def _hide_console():
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
+        pass
+
+_hide_console()
+
 # Logging Setup
 LOG_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(LOG_DIR, "wowra.log")
