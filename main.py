@@ -102,6 +102,28 @@ _IsIconic = ctypes.windll.user32.IsIconic  # Minimiert?
 _GetForegroundWindow = ctypes.windll.user32.GetForegroundWindow
 _GetForegroundWindow.restype = ctypes.c_void_p
 
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+_GetCursorPos = ctypes.windll.user32.GetCursorPos
+_GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+_GetCursorPos.restype = ctypes.c_bool
+
+def get_cursor_pos():
+    """Gibt die aktuelle Mausposition als (x, y) zurück."""
+    pt = POINT()
+    _GetCursorPos(ctypes.byref(pt))
+    return (pt.x, pt.y)
+
+def cursor_in_wow_window():
+    """Prüft ob der Mauszeiger innerhalb des WoW-Fensters ist."""
+    wow = find_wow_window()
+    if not wow:
+        return False
+    _, wx, wy, ww, wh = wow
+    mx, my = get_cursor_pos()
+    return wx <= mx <= wx + ww and wy <= my <= wy + wh
+
 # Bekannte WoW-Fenstertitel
 WOW_WINDOW_NAMES = ["World of Warcraft"]
 
@@ -120,8 +142,20 @@ MODIFIER_KEYS = {'ctrl', 'shift', 'alt', 'left ctrl', 'right ctrl',
                  'left shift', 'right shift', 'left alt', 'right alt',
                  'left windows', 'right windows'}
 
-def normalize_modifier(name):
-    """Normalisiert Modifier-Namen."""
+MODIFIER_SCAN_CODES = {
+    42: 'shift',    # Left Shift
+    54: 'shift',    # Right Shift
+    29: 'ctrl',     # Left Ctrl
+    285: 'ctrl',    # Right Ctrl
+    56: 'alt',      # Left Alt
+    312: 'alt',     # Right Alt
+    541: 'alt',     # Right Alt (alternative)
+}
+
+def normalize_modifier(name, scan_code=None):
+    """Normalisiert Modifier-Namen. Nutzt Scan-Code falls vorhanden."""
+    if scan_code and scan_code in MODIFIER_SCAN_CODES:
+        return MODIFIER_SCAN_CODES[scan_code]
     n = name.lower()
     if 'ctrl' in n:
         return 'ctrl'
@@ -155,7 +189,11 @@ DEFAULT_BUFF = {
     "sound": True,
     "tts": True,
     "sound_file": "",
-    "depends_on": ""
+    "depends_on": "",
+    "extend_hotkey": "",
+    "extend_seconds": 0,
+    "extend_radius": 80,
+    "extend_enabled": False
 }
 
 DEFAULT_CONFIG = {
@@ -280,6 +318,7 @@ class BuffTimer:
         self.name = name
         self.duration = duration
         self.max_duration = max_duration
+        self._base_max_duration = max_duration
         self.alert_before = alert_before
         self.end_time = 0.0
         self.active = False
@@ -288,6 +327,8 @@ class BuffTimer:
 
     def activate(self):
         now = time.time()
+        # Bei normaler Aktivierung: max_duration auf Original zurücksetzen
+        self.max_duration = self._base_max_duration
         if self.active:
             remaining = self.end_time - now
             new_remaining = min(remaining + self.duration, self.max_duration)
@@ -302,6 +343,22 @@ class BuffTimer:
             logger.info(f"START '{self.name}': {self.duration}s (max {self.max_duration}s)")
         self.expired_at = None
         self.early_alert_fired = False
+
+    def extend(self, seconds):
+        """Verlängert den aktiven Timer um X Sekunden und erhöht max_duration temporär."""
+        if not self.active:
+            return False
+        now = time.time()
+        remaining = self.end_time - now
+        self.max_duration += seconds
+        new_remaining = remaining + seconds
+        self.end_time = now + new_remaining
+        self.early_alert_fired = False
+        logger.info(
+            f"EXTEND '{self.name}': {remaining:.1f}s + {seconds}s "
+            f"= {new_remaining:.1f}s (new max {self.max_duration}s)"
+        )
+        return True
 
     @property
     def remaining(self):
@@ -412,6 +469,7 @@ class WoWraOverlay:
 
         # Thread-sichere Queue für Hotkey-Events
         self._pending_activations = deque()
+        self._pending_extends = deque()
 
         # Tracking: welche Keyboard-Tasten sind gerade gedrückt gehalten
         self._keys_held = set()
@@ -1147,6 +1205,18 @@ class WoWraOverlay:
                 logger.error(f"Hotkey '{hotkey}' für '{name}' fehlgeschlagen: {ex}")
                 print(f"Hotkey '{hotkey}' für '{name}' konnte nicht registriert werden: {ex}")
 
+            # Extend-Hotkey registrieren
+            ext_hk = data['config'].get('extend_hotkey', '')
+            ext_sec = data['config'].get('extend_seconds', 0)
+            ext_enabled = data['config'].get('extend_enabled', False)
+            if ext_hk and ext_sec > 0 and ext_enabled:
+                try:
+                    self._register_single_hotkey(
+                        f"__extend__{name}", ext_hk)
+                    logger.info(f"Extend-Hotkey registriert: '{ext_hk}' -> '{name}' (+{ext_sec}s)")
+                except Exception as ex:
+                    logger.error(f"Extend-Hotkey '{ext_hk}' für '{name}' fehlgeschlagen: {ex}")
+
         # Einen einzigen Keyboard-Hook für alle Tasten-Bindings
         if self._keyboard_bindings:
             def global_keyboard_callback(event):
@@ -1243,8 +1313,14 @@ class WoWraOverlay:
 
     def _on_hotkey(self, buff_name):
         """Thread-sicher: Event in Queue legen, wird im Main-Thread verarbeitet."""
-        logger.debug(f"TASTE erkannt für '{buff_name}'")
-        self._pending_activations.append(buff_name)
+        if buff_name.startswith('__extend__'):
+            real_name = buff_name[len('__extend__'):]
+            cursor_pos = get_cursor_pos()
+            logger.debug(f"EXTEND-TASTE erkannt für '{real_name}' bei {cursor_pos}")
+            self._pending_extends.append((real_name, cursor_pos))
+        else:
+            logger.debug(f"TASTE erkannt für '{buff_name}'")
+            self._pending_activations.append(buff_name)
 
     def _poll_mouse(self):
         """Pollt Maustasten via GetAsyncKeyState - läuft im Tkinter Main-Thread."""
@@ -1261,9 +1337,16 @@ class WoWraOverlay:
                         mods_ok = False
                         break
                 if mods_ok:
-                    logger.debug(f"MOUSE-POLL: {binding['display']} erkannt für '{binding['name']}'")
-                    if binding['name'] in self.timers:
-                        self.timers[binding['name']]['timer'].activate()
+                    bname = binding['name']
+                    if bname.startswith('__extend__'):
+                        real_name = bname[len('__extend__'):]
+                        cursor_pos = get_cursor_pos()
+                        logger.debug(f"MOUSE-POLL: {binding['display']} EXTEND für '{real_name}' bei {cursor_pos}")
+                        self._pending_extends.append((real_name, cursor_pos))
+                    elif bname in self.timers:
+                        logger.debug(f"MOUSE-POLL: {binding['display']} erkannt für '{bname}'")
+                        self.timers[bname]['timer'].activate()
+                        self.timers[bname]['last_cursor_pos'] = get_cursor_pos()
 
             self._mouse_prev_state[vk] = pressed
 
@@ -1358,6 +1441,35 @@ class WoWraOverlay:
                             logger.debug(f"BLOCKIERT '{buff_name}': Abhängigkeit '{depends_on}' nicht aktiv")
                             continue
                     data['timer'].activate()
+                    data['last_cursor_pos'] = get_cursor_pos()
+            except IndexError:
+                break
+
+        # Extend-Hotkeys verarbeiten
+        while self._pending_extends:
+            try:
+                buff_name, cursor_pos = self._pending_extends.popleft()
+                if buff_name in self.timers:
+                    data = self.timers[buff_name]
+                    ext_sec = data['config'].get('extend_seconds', 0)
+                    ext_radius = data['config'].get('extend_radius', 80)
+                    last_pos = data.get('last_cursor_pos')
+                    if ext_sec > 0 and last_pos:
+                        # 15 Sekunden Cooldown
+                        now = time.time()
+                        last_ext = data.get('last_extend_time', 0)
+                        if now - last_ext < 15:
+                            logger.debug(f"EXTEND '{buff_name}' COOLDOWN: {15 - (now - last_ext):.1f}s verbleibend")
+                        else:
+                            dx = cursor_pos[0] - last_pos[0]
+                            dy = cursor_pos[1] - last_pos[1]
+                            dist = (dx * dx + dy * dy) ** 0.5
+                            if dist <= ext_radius:
+                                data['timer'].extend(ext_sec)
+                                data['last_extend_time'] = now
+                                logger.info(f"EXTEND '{buff_name}': Abstand {dist:.0f}px <= {ext_radius}px")
+                            else:
+                                logger.debug(f"EXTEND '{buff_name}' IGNORIERT: Abstand {dist:.0f}px > {ext_radius}px")
             except IndexError:
                 break
 
@@ -1830,9 +1942,12 @@ class ConfigDialog:
             dep_txt = f"  🔗{dep}" if dep else ""
             snd = buff.get('sound_file', '')
             snd_txt = f"  🎵" if snd else ""
+            ext = buff.get('extend_hotkey', '')
+            ext_sec = buff.get('extend_seconds', 0)
+            ext_txt = f"  💊[{ext}]+{ext_sec}s" if ext and ext_sec > 0 else ""
             text = (f"{buff['name']}  |  [{buff['hotkey']}]  |  "
                     f"{buff['duration']}s / max {buff['max_duration']}s  "
-                    f"{sound} {tts}{alert_txt}{dep_txt}{snd_txt}")
+                    f"{sound} {tts}{alert_txt}{dep_txt}{snd_txt}{ext_txt}")
             self.buff_listbox.insert(tk.END, text)
 
     def _on_profile_changed(self):
@@ -1939,7 +2054,7 @@ class BuffEditDialog:
 
         self.win = tk.Toplevel(parent)
         self.win.title("Buff bearbeiten" if self.is_edit else "Neuen Buff hinzufügen")
-        self.win.geometry("420x560")
+        self.win.geometry("420x650")
         self.win.configure(bg="#0d1117")
         self.win.attributes('-topmost', True)
         self.win.resizable(False, False)
@@ -2050,6 +2165,60 @@ class BuffEditDialog:
         )
         dep_menu.pack(side=tk.LEFT, padx=8)
 
+        # Rasche Heilung / Extend
+        tk.Frame(frame, bg="#30363d", height=1).pack(fill=tk.X, pady=(10, 6))
+        tk.Label(frame, text="💊 Verlängerung (z.B. Rasche Heilung):", fg="#58a6ff",
+                 bg="#0d1117", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
+
+        self.extend_enabled_var = tk.BooleanVar(value=defaults.get('extend_enabled', False))
+        tk.Checkbutton(frame, text="Verlängerung aktiviert", variable=self.extend_enabled_var,
+                       fg="#e6edf3", bg="#0d1117", selectcolor="#161b22",
+                       activebackground="#0d1117", activeforeground="#e6edf3",
+                       font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 4))
+
+        ext_hk_frame = tk.Frame(frame, bg="#0d1117")
+        ext_hk_frame.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(ext_hk_frame, text="Hotkey:", fg="#e6edf3",
+                 bg="#0d1117", font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self.extend_hk_var = tk.StringVar(value=defaults.get('extend_hotkey', ''))
+        self.extend_hk_entry = tk.Entry(
+            ext_hk_frame, textvariable=self.extend_hk_var, bg="#161b22", fg="#e6edf3",
+            font=("Segoe UI", 10), relief="flat", width=12, insertbackground="#e6edf3")
+        self.extend_hk_entry.pack(side=tk.LEFT, padx=6)
+        self._extend_record_btn = tk.Button(
+            ext_hk_frame, text="🎯 Aufnehmen", bg="#da3633", fg="white",
+            font=("Segoe UI", 8, "bold"), relief="flat", cursor="hand2",
+            command=self._start_extend_recording)
+        self._extend_record_btn.pack(side=tk.LEFT, padx=2)
+
+        ext_sec_frame = tk.Frame(frame, bg="#0d1117")
+        ext_sec_frame.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(ext_sec_frame, text="Verlängert um (Sek.):", fg="#e6edf3",
+                 bg="#0d1117", font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self.extend_sec_var = tk.IntVar(value=defaults.get('extend_seconds', 0))
+        tk.Entry(ext_sec_frame, textvariable=self.extend_sec_var, bg="#161b22", fg="#e6edf3",
+                 font=("Segoe UI", 10), relief="flat", width=5, insertbackground="#e6edf3"
+                 ).pack(side=tk.LEFT, padx=6)
+        tk.Label(ext_sec_frame, text="(erhöht auch Max-Dauer temporär)", fg="#484f58",
+                 bg="#0d1117", font=("Segoe UI", 8, "italic")).pack(side=tk.LEFT)
+
+        ext_rad_frame = tk.Frame(frame, bg="#0d1117")
+        ext_rad_frame.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(ext_rad_frame, text="Cursor-Radius (px):", fg="#e6edf3",
+                 bg="#0d1117", font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self.extend_radius_var = tk.IntVar(value=defaults.get('extend_radius', 80))
+        tk.Entry(ext_rad_frame, textvariable=self.extend_radius_var, bg="#161b22", fg="#e6edf3",
+                 font=("Segoe UI", 10), relief="flat", width=5, insertbackground="#e6edf3"
+                 ).pack(side=tk.LEFT, padx=6)
+        tk.Label(ext_rad_frame, text="(max. Abstand zur letzten Aktivierung)", fg="#484f58",
+                 bg="#0d1117", font=("Segoe UI", 8, "italic")).pack(side=tk.LEFT)
+        self.extend_sec_var = tk.IntVar(value=defaults.get('extend_seconds', 0))
+        tk.Entry(ext_sec_frame, textvariable=self.extend_sec_var, bg="#161b22", fg="#e6edf3",
+                 font=("Segoe UI", 10), relief="flat", width=5, insertbackground="#e6edf3"
+                 ).pack(side=tk.LEFT, padx=6)
+        tk.Label(ext_sec_frame, text="(erhöht auch Max-Dauer temporär)", fg="#484f58",
+                 bg="#0d1117", font=("Segoe UI", 8, "italic")).pack(side=tk.LEFT)
+
         # Speichern
         tk.Button(frame, text="✅ Speichern", bg="#238636", fg="white",
                   font=("Segoe UI", 11, "bold"), relief="flat", cursor="hand2",
@@ -2057,6 +2226,7 @@ class BuffEditDialog:
 
         # Recording state
         self._recording = False
+        self._recording_target = 'hotkey'  # 'hotkey' oder 'extend'
         self._record_hooks = []
         self._pressed_modifiers = set()
 
@@ -2072,14 +2242,29 @@ class BuffEditDialog:
             self.sound_file_var.set(path)
 
     def _start_recording(self):
-        """Startet die Hotkey-Aufnahme."""
+        """Startet die Hotkey-Aufnahme für den Haupt-Hotkey."""
+        self._do_start_recording('hotkey')
+
+    def _start_extend_recording(self):
+        """Startet die Hotkey-Aufnahme für den Extend-Hotkey."""
+        self._do_start_recording('extend')
+
+    def _do_start_recording(self, target):
+        """Startet die Hotkey-Aufnahme für das angegebene Ziel."""
         if self._recording:
             return
         self._recording = True
+        self._recording_target = target
         self._pressed_modifiers = set()
-        self.hotkey_var.set("")
-        self.hotkey_entry.configure(bg="#3d1a1a")
-        self.record_btn.configure(text="⏺ Warte...", bg="#8b0000")
+
+        if target == 'hotkey':
+            self.hotkey_var.set("")
+            self.hotkey_entry.configure(bg="#3d1a1a")
+            self.record_btn.configure(text="⏺ Warte...", bg="#8b0000")
+        else:
+            self.extend_hk_var.set("")
+            self.extend_hk_entry.configure(bg="#3d1a1a")
+            self._extend_record_btn.configure(text="⏺ Warte...", bg="#8b0000")
 
         # Keyboard hook
         kb_hook = keyboard.hook(self._on_record_key, suppress=False)
@@ -2099,14 +2284,18 @@ class BuffEditDialog:
             return
 
         name = event.name.lower() if event.name else ''
+        scan = getattr(event, 'scan_code', None)
+        # Scan-Code basierte Modifier-Erkennung für zuverlässige Shift/Alt-Unterscheidung
+        is_modifier = (scan in MODIFIER_SCAN_CODES) or name in MODIFIER_KEYS or any(m in name for m in ('ctrl', 'shift', 'alt'))
 
         if event.event_type == 'down':
-            if name in MODIFIER_KEYS or any(m in name for m in ('ctrl', 'shift', 'alt')):
-                self._pressed_modifiers.add(normalize_modifier(name))
+            if is_modifier:
+                self._pressed_modifiers.add(normalize_modifier(name, scan))
                 # Live-Anzeige der Modifier
                 if self._pressed_modifiers:
                     preview = '+'.join(sorted(self._pressed_modifiers)) + '+...'
-                    self.win.after(0, lambda: self.hotkey_var.set(preview))
+                    var = self.hotkey_var if self._recording_target == 'hotkey' else self.extend_hk_var
+                    self.win.after(0, lambda: var.set(preview))
             else:
                 # Trigger-Taste gefunden
                 modifiers = sorted(self._pressed_modifiers)
@@ -2115,6 +2304,13 @@ class BuffEditDialog:
                 else:
                     result = event.name
                 self.win.after(0, lambda r=result: self._finish_recording(r))
+        elif event.event_type == 'up' and is_modifier:
+            # Modifier-Taste losgelassen ohne andere Taste -> als Einzeltaste verwenden
+            mod_name = normalize_modifier(name, scan)
+            if mod_name in self._pressed_modifiers and len(self._pressed_modifiers) == 1:
+                result = mod_name
+                self.win.after(0, lambda r=result: self._finish_recording(r))
+            self._pressed_modifiers.discard(mod_name)
 
     def _on_record_mouse(self, event):
         """Callback für Maus-Events während der Aufnahme."""
@@ -2123,9 +2319,6 @@ class BuffEditDialog:
         if not isinstance(event, mouse.ButtonEvent):
             return
         if event.event_type != 'down':
-            return
-        # Links-Klick ignorieren (damit UI bedienbar bleibt)
-        if event.button == 'left':
             return
 
         display_name = MOUSE_BUTTON_MAP.get(event.button, event.button)
@@ -2140,19 +2333,30 @@ class BuffEditDialog:
         """Beendet die Aufnahme und setzt das Ergebnis."""
         self._recording = False
         self._unhook_recording()
-        self.hotkey_var.set(result)
-        self.hotkey_entry.configure(bg="#161b22")
-        self.record_btn.configure(text="🎯 Aufnehmen", bg="#da3633")
+        if self._recording_target == 'hotkey':
+            self.hotkey_var.set(result)
+            self.hotkey_entry.configure(bg="#161b22")
+            self.record_btn.configure(text="🎯 Aufnehmen", bg="#da3633")
+        else:
+            self.extend_hk_var.set(result)
+            self.extend_hk_entry.configure(bg="#161b22")
+            self._extend_record_btn.configure(text="🎯 Aufnehmen", bg="#da3633")
 
     def _stop_recording_timeout(self):
         """Timeout - Aufnahme abbrechen."""
         if self._recording:
             self._recording = False
             self._unhook_recording()
-            self.hotkey_entry.configure(bg="#161b22")
-            self.record_btn.configure(text="🎯 Aufnehmen", bg="#da3633")
-            if not self.hotkey_var.get() or self.hotkey_var.get().endswith('...'):
-                self.hotkey_var.set("")
+            if self._recording_target == 'hotkey':
+                self.hotkey_entry.configure(bg="#161b22")
+                self.record_btn.configure(text="🎯 Aufnehmen", bg="#da3633")
+                if not self.hotkey_var.get() or self.hotkey_var.get().endswith('...'):
+                    self.hotkey_var.set("")
+            else:
+                self.extend_hk_entry.configure(bg="#161b22")
+                self._extend_record_btn.configure(text="🎯 Aufnehmen", bg="#da3633")
+                if not self.extend_hk_var.get() or self.extend_hk_var.get().endswith('...'):
+                    self.extend_hk_var.set("")
 
     def _unhook_recording(self):
         """Entfernt alle Recording-Hooks."""
@@ -2203,6 +2407,10 @@ class BuffEditDialog:
             "tts": self.tts_var.get(),
             "sound_file": self.sound_file_var.get().strip(),
             "depends_on": depends,
+            "extend_hotkey": self.extend_hk_var.get().strip(),
+            "extend_seconds": max(0, int(self.extend_sec_var.get())),
+            "extend_radius": max(0, int(self.extend_radius_var.get())),
+            "extend_enabled": self.extend_enabled_var.get(),
         }
         self.on_save(buff)
         self.win.destroy()
