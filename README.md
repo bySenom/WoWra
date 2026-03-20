@@ -98,6 +98,10 @@ Einstellungen landen in `config.json`:
 - Bei 0s: Ablauf-Warnung + blinkender roter Balken
 - **Rasche Heilung:** Eigener Extend-Hotkey verlängert den Timer über 20s hinaus
 
+## Disclaimer
+
+WoWra liest keinen Spielspeicher, injiziert keinen Code und interagiert nicht mit dem WoW-Client. Es ist ein reines Overlay – im Prinzip eine Stoppuhr auf dem Bildschirm. Trotzdem: Nutzung auf eigene Verantwortung. Blizzard kann jederzeit Richtlinien ändern.
+
 ## Lizenz
 
 MIT
