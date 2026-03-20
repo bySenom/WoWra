@@ -589,6 +589,20 @@ class WoWraOverlay:
         self._countdown_label.pack()
         self._countdown_window.withdraw()  # Versteckt bis benötigt
 
+        # Click-through: Mausklicks gehen durch das Fenster hindurch
+        self._countdown_window.update_idletasks()
+        try:
+            hwnd = int(self._countdown_window.frame(), 16)
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            _GetWindowLongW = ctypes.windll.user32.GetWindowLongW
+            _SetWindowLongW = ctypes.windll.user32.SetWindowLongW
+            style = _GetWindowLongW(hwnd, GWL_EXSTYLE)
+            _SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+        except Exception:
+            pass
+
     def _update_visual_countdown(self):
         """Aktualisiert den großen Countdown über dem Bildschirm."""
         if not self._countdown_window or not self.config.get('visual_countdown', True):
