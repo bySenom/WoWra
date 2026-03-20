@@ -1157,7 +1157,7 @@ class ConfigDialog:
         self.on_save = on_save
 
         self.win = tk.Toplevel(parent)
-        self.win.title("⚙ Buff Reminder - Einstellungen")
+        self.win.title(f"⚙ WoWra - Einstellungen  v{CURRENT_VERSION}")
         self.win.geometry("540x700")
         self.win.configure(bg="#0d1117")
         self.win.attributes('-topmost', True)
@@ -1309,6 +1309,11 @@ class ConfigDialog:
         tk.Button(main_frame, text="💾 Speichern & Anwenden", bg="#238636", fg="white",
                   font=("Segoe UI", 11, "bold"), relief="flat", cursor="hand2",
                   padx=20, pady=6, command=self._save).pack(pady=(20, 0))
+
+        # Version-Anzeige
+        tk.Label(main_frame, text=f"WoWra v{CURRENT_VERSION}",
+                 fg="#484f58", bg="#0d1117",
+                 font=("Segoe UI", 9, "italic")).pack(pady=(12, 4))
 
     def _get_active_buffs(self):
         """Gibt die Buff-Liste des im Dialog gewählten Profils zurück."""
