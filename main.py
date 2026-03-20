@@ -144,7 +144,7 @@ if not os.path.exists(SOUNDS_DIR):
 
 # Auto-Updater Konfiguration
 GITHUB_REPO = "bySenom/WoWra"
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.1.0"
 
 DEFAULT_BUFF = {
     "name": "Blühendes Leben",
