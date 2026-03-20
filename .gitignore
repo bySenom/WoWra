@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+config.json
+buff_reminder.log
+sounds/*.wav
+.vscode/
+*.exe
+dist/
+build/
+*.spec
