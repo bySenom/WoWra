@@ -178,7 +178,7 @@ if not os.path.exists(SOUNDS_DIR):
 
 # Auto-Updater Konfiguration
 GITHUB_REPO = "bySenom/WoWra"
-CURRENT_VERSION = "1.1.0"
+CURRENT_VERSION = "1.2.0"
 
 DEFAULT_BUFF = {
     "name": "Blühendes Leben",
@@ -1627,11 +1627,12 @@ class WoWraOverlay:
 
         wow = find_wow_window()
         if not wow:
-            # WoW nicht (mehr) gefunden -> alles verstecken
+            # WoW nicht (mehr) gefunden
             if self._wow_hwnd is not None:
-                logger.info("WoW-Fenster verloren - UI wird ausgeblendet")
-                self._wow_hwnd = None
-                self._wow_last_rect = None
+                # WoW war vorher da -> Programm beenden
+                logger.info("WoW-Fenster geschlossen - WoWra wird beendet")
+                self.root.after(500, self._quit)
+                return
             self._hide_all_ui()
             return
 
