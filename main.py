@@ -327,10 +327,16 @@ class BuffTimer:
 
     def activate(self):
         now = time.time()
-        # Bei normaler Aktivierung: max_duration auf Original zurücksetzen
-        self.max_duration = self._base_max_duration
         if self.active:
             remaining = self.end_time - now
+            # Wenn Timer durch Extend über base_max liegt: nicht refreshen
+            if remaining > self._base_max_duration:
+                logger.info(
+                    f"SKIP REFRESH '{self.name}': {remaining:.1f}s > base max {self._base_max_duration}s"
+                )
+                return
+            # Normale Aktivierung: max_duration auf Original zurücksetzen
+            self.max_duration = self._base_max_duration
             new_remaining = min(remaining + self.duration, self.max_duration)
             self.end_time = now + new_remaining
             logger.info(
@@ -338,6 +344,7 @@ class BuffTimer:
                 f"= {new_remaining:.1f}s (max {self.max_duration}s)"
             )
         else:
+            self.max_duration = self._base_max_duration
             self.end_time = now + self.duration
             self.active = True
             logger.info(f"START '{self.name}': {self.duration}s (max {self.max_duration}s)")
