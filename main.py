@@ -988,39 +988,55 @@ class WoWraOverlay:
                     pass
         return hwnds
 
+    def _hide_all_ui(self):
+        """Versteckt ALLE UI-Elemente (Overlay, Countdown, offene Dialoge)."""
+        if self._wow_overlay_hidden:
+            return
+        self.root.withdraw()
+        if self._countdown_window:
+            self._countdown_window.withdraw()
+        for w in self.root.winfo_children():
+            if isinstance(w, tk.Toplevel):
+                w.withdraw()
+        self._wow_overlay_hidden = True
+
+    def _show_all_ui(self):
+        """Zeigt ALLE UI-Elemente wieder an."""
+        if not self._wow_overlay_hidden:
+            return
+        self.root.deiconify()
+        self.root.attributes('-topmost', True)
+        for w in self.root.winfo_children():
+            if isinstance(w, tk.Toplevel) and w != self._countdown_window:
+                w.deiconify()
+                w.attributes('-topmost', True)
+        # Countdown wird von _update_visual_countdown() gesteuert
+        self._wow_overlay_hidden = False
+
     def _track_wow_window(self):
         """Prüft ob sich das WoW-Fenster bewegt hat und zieht das Overlay mit.
         Versteckt das Overlay wenn WoW minimiert oder verdeckt ist."""
         if not self.config['overlay'].get('attach_to_wow', True):
             # Wenn abgekoppelt, sicherstellen dass es sichtbar ist
             if self._wow_overlay_hidden:
-                self.root.deiconify()
-                self._wow_overlay_hidden = False
+                self._show_all_ui()
             return
 
         wow = find_wow_window()
         if not wow:
-            # WoW nicht (mehr) gefunden -> Overlay verstecken
+            # WoW nicht (mehr) gefunden -> alles verstecken
             if self._wow_hwnd is not None:
-                logger.info("WoW-Fenster verloren - Overlay wird ausgeblendet")
+                logger.info("WoW-Fenster verloren - UI wird ausgeblendet")
                 self._wow_hwnd = None
                 self._wow_last_rect = None
-            if not self._wow_overlay_hidden:
-                self.root.withdraw()
-                if self._countdown_window:
-                    self._countdown_window.withdraw()
-                self._wow_overlay_hidden = True
+            self._hide_all_ui()
             return
 
         hwnd, wx, wy, ww, wh = wow
 
         # Prüfe ob WoW minimiert ist
         if _IsIconic(hwnd):
-            if not self._wow_overlay_hidden:
-                self.root.withdraw()
-                if self._countdown_window:
-                    self._countdown_window.withdraw()
-                self._wow_overlay_hidden = True
+            self._hide_all_ui()
             return
 
         # Prüfe ob WoW im Vordergrund ist
@@ -1029,19 +1045,13 @@ class WoWraOverlay:
         wow_is_active = (fg_hwnd == hwnd) or (fg_hwnd in own_hwnds)
 
         if not wow_is_active:
-            # Anderes Fenster ist im Vordergrund -> Overlay verstecken
-            if not self._wow_overlay_hidden:
-                self.root.withdraw()
-                if self._countdown_window:
-                    self._countdown_window.withdraw()
-                self._wow_overlay_hidden = True
+            # Anderes Fenster ist im Vordergrund -> alles verstecken
+            self._hide_all_ui()
             return
 
-        # WoW ist sichtbar und aktiv -> Overlay zeigen
+        # WoW ist sichtbar und aktiv -> alles zeigen
         if self._wow_overlay_hidden:
-            self.root.deiconify()
-            self.root.attributes('-topmost', True)
-            self._wow_overlay_hidden = False
+            self._show_all_ui()
 
         if self._wow_hwnd is None:
             # WoW gerade erst gefunden
