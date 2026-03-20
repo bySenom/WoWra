@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 config.json
+wowra.log
 buff_reminder.log
 sounds/*.wav
 .vscode/

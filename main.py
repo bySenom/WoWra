@@ -1,5 +1,5 @@
 """
-BuffReminder WoW - Overlay-Tool für Buff-Timer mit Sound/TTS-Benachrichtigung.
+WoWra - WeakAura-ähnliches externes Overlay-Tool für WoW mit Buff-Timern, Sound/TTS.
 Zeigt ein immer sichtbares Overlay mit Countdown-Balken für konfigurierbare Buffs.
 """
 
@@ -18,9 +18,9 @@ from collections import deque
 
 # Logging Setup
 LOG_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(LOG_DIR, "buff_reminder.log")
+LOG_FILE = os.path.join(LOG_DIR, "wowra.log")
 
-logger = logging.getLogger("BuffReminder")
+logger = logging.getLogger("WoWra")
 logger.setLevel(logging.DEBUG)
 
 _file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
@@ -31,7 +31,7 @@ _file_handler.setFormatter(logging.Formatter(
 logger.addHandler(_file_handler)
 
 logger.info("=" * 50)
-logger.info("BuffReminder gestartet")
+logger.info("WoWra gestartet")
 
 try:
     import keyboard
@@ -132,7 +132,7 @@ if not os.path.exists(SOUNDS_DIR):
     os.makedirs(SOUNDS_DIR)
 
 # Auto-Updater Konfiguration
-GITHUB_REPO = ""  # z.B. "username/BuffReminderWoW" - leer = Updater deaktiviert
+GITHUB_REPO = "bySenom/WoWra"
 CURRENT_VERSION = "1.0.0"
 
 DEFAULT_BUFF = {
@@ -235,7 +235,7 @@ def check_for_updates():
     try:
         import urllib.request
         url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        req = urllib.request.Request(url, headers={'User-Agent': 'BuffReminderWoW'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'WoWra'})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode('utf-8'))
         tag = data.get('tag_name', '').lstrip('v')
@@ -369,7 +369,7 @@ class TTSWorker:
         self._running = False
 
 
-class BuffReminderOverlay:
+class WoWraOverlay:
     """Haupt-Overlay-Anwendung."""
 
     BG_COLOR = "#0d1117"
@@ -407,7 +407,7 @@ class BuffReminderOverlay:
 
         # Tkinter Root
         self.root = tk.Tk()
-        self.root.title("BuffReminder")
+        self.root.title("WoWra")
         self.root.overrideredirect(True)
         self.root.attributes('-topmost', True)
         self.root.attributes('-alpha', self.config['overlay']['opacity'])
@@ -1689,5 +1689,5 @@ class BuffEditDialog:
 
 
 if __name__ == "__main__":
-    app = BuffReminderOverlay()
+    app = WoWraOverlay()
     app.run()

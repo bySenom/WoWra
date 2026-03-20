@@ -1,8 +1,8 @@
-# 🛡️ BuffReminder WoW
+# 🛡️ WoWra
 
 Ein WeakAura-ähnliches externes Overlay-Tool für World of Warcraft, das dich an ablaufende Buffs erinnert.
 
-> **[🌐 Website](https://BuffReminderWoW.github.io/BuffReminderWoW/)** · **[⬇ Download](https://github.com/BuffReminderWoW/BuffReminderWoW/releases/latest)**
+> **[🌐 Website](https://bySenom.github.io/WoWra/)** · **[⬇ Download](https://github.com/bySenom/WoWra/releases/latest)**
 
 ---
 
@@ -30,8 +30,8 @@ Ein WeakAura-ähnliches externes Overlay-Tool für World of Warcraft, das dich a
 ### Setup
 
 ```bash
-git clone https://github.com/BuffReminderWoW/BuffReminderWoW.git
-cd BuffReminderWoW
+git clone https://github.com/bySenom/WoWra.git
+cd WoWra
 pip install -r requirements.txt
 ```
 
