@@ -2,6 +2,8 @@
 
 Ein WeakAura-ähnliches externes Overlay-Tool für World of Warcraft, das dich an ablaufende Buffs erinnert.
 
+Seit WoW: The War Within (Midnight) verwenden Auren sogenannte **Secret Values**, wodurch AddOns wie WeakAuras Buff-Laufzeiten nicht mehr zuverlässig tracken können. Da der eigene Cooldown-Manager von WoW ebenfalls Mängel aufweist, schließt WoWra diese Lücke als externe Lösung.
+
 > **[🌐 Website](https://bySenom.github.io/WoWra/)** · **[⬇ Download](https://github.com/bySenom/WoWra/releases/latest)**
 
 ---
